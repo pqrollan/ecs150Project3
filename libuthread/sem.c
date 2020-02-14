@@ -1,5 +1,6 @@
 #include <stddef.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 #include "queue.h"
 #include "sem.h"
@@ -62,17 +63,22 @@ int sem_destroy(sem_t sem)
  */
 int sem_down(sem_t sem)
 {
+        enter_critical_section();
+
         if (sem == NULL) {
                 return -1;
         } else if (sem->count < 1) {
                 pthread_t *curr_tid = malloc(sizeof(pthread_t));
                 *curr_tid = pthread_self();
                 queue_enqueue(sem->q, (void *)curr_tid);
+                //exit_critical_section();
                 thread_block();
-        } else {
-                sem->count--;
+                enter_critical_section();
         }
+        //enter_critical_section();
 
+        sem->count--;
+        exit_critical_section();
         return 0;
 }
 /*
@@ -89,18 +95,21 @@ int sem_down(sem_t sem)
  */
 int sem_up(sem_t sem)
 {
+        enter_critical_section();
         if (sem == NULL) {
                 return -1;
         }
 
 	sem->count++;
-        
-        if (queue_length(sem->q) > 0) {
-                pthread_t tid_unblock;
-                queue_dequeue(sem->q, (void *)&tid_unblock);
-                thread_unblock(tid_unblock);
-        }
+        //exit_critical_section();
 
+        if (queue_length(sem->q) > 0) {
+                pthread_t *tid_unblock;
+                queue_dequeue(sem->q, (void **)&tid_unblock);
+                thread_unblock(*tid_unblock);
+                //exit_critical_section();
+        }
+        exit_critical_section();
         return 0;
 }
 /*

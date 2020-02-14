@@ -44,7 +44,6 @@ static void *thread1(void *arg)
 		printf("thread 1, x = %zu\n", t->x++);
 		sem_up(t->sem2);
 	}
-
 	return NULL;
 }
 
