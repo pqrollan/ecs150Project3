@@ -1,5 +1,5 @@
 lib := libuthread.a
-objs := sem.o
+objs := sem.o tps.o
 preobjs := thread.o queue.o
 
 CC := gcc
