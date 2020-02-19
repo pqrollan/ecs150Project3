@@ -4,7 +4,8 @@ programs := \
 	sem_count.x \
 	sem_buffer.x \
 	sem_prime.x \
-	tps_simple.x
+	tps_simple.x \
+        tps_tester.x
 
 ## *** IMPORTANT *** ##
 ##	You should NOT have to modify anything below
@@ -66,6 +67,8 @@ deps := $(patsubst %.o,%.d,$(objs))
 $(libuthread):
 	@echo "MAKE	$@"
 	$(Q)$(MAKE) V=$(V) D=$(D) -C $(UTHREADPATH)
+
+tps_tester.x: LDFLAGS += -Wl,--wrap=mmap
 
 # Generic rule for linking final applications
 %.x: %.o $(libuthread)
