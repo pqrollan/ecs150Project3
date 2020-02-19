@@ -17,9 +17,14 @@
  */
 //#define TPS_SIZE 4096
 
+struct mempage {
+        void *memptr;
+        int num_refs;
+};
+
 struct tps {
         pthread_t tid;
-        void *memarea;
+        struct mempage *memarea;
 };
 
 queue_t tps_q = NULL;
@@ -31,6 +36,33 @@ int find_tps(void *data, void *arg)
         } else {
                 return 0;
         }
+}
+
+int find_by_memarea(void *data, void *arg)
+{
+        if (((void *) arg) == ((struct tps *) data)->memarea->memptr) {
+                return 1;
+        } else {
+                return 0;
+        }       
+}
+
+static void segv_handler(int sig, siginfo_t *si, __attribute__((unused)) void
+        *context)
+{
+        void *p_fault = (void *)((uintptr_t)si->si_addr & ~(TPS_SIZE - 1));
+
+        void *temp = NULL;
+        queue_iterate(tps_q, &find_by_memarea, p_fault, &temp);
+
+        if (temp != NULL) {
+                fprintf(stderr, "TPS protection error!\n");
+        }
+
+        signal(SIGSEGV, SIG_DFL);
+        signal(SIGBUS, SIG_DFL);
+
+        raise(sig);
 }
 
 /*
@@ -47,8 +79,14 @@ int find_tps(void *data, void *arg)
  */
 int tps_init(int segv)
 {
-        if (segv != 0) {
-                segv = 0;
+        if (segv) {
+                struct sigaction sa;
+
+                sigemptyset(&sa.sa_mask);
+                sa.sa_flags = SA_SIGINFO;
+                sa.sa_sigaction = segv_handler;
+                sigaction(SIGBUS, &sa, NULL);
+                sigaction(SIGSEGV, &sa, NULL);
         }
 	if (tps_q != NULL) {
                 return -1;
@@ -85,7 +123,13 @@ int tps_create(void)
                 return -1;
         }
 
-        new_tps->memarea = mmap(NULL, TPS_SIZE, PROT_READ | PROT_WRITE,
+        new_tps->memarea = malloc(sizeof(struct mempage));
+        if (new_tps->memarea == NULL) {
+                return -1;
+        }
+
+        new_tps->memarea->num_refs = 1;
+        new_tps->memarea->memptr = mmap(NULL, TPS_SIZE, PROT_NONE,
                 MAP_ANON|MAP_PRIVATE, -1, 0);
 
         if (new_tps->memarea == NULL) {
@@ -101,7 +145,7 @@ int unmap_tps(void *data, void *arg)
 {
         struct tps *curr_tps = data;
         if (*((pthread_t *) arg) == curr_tps->tid) {
-                munmap(curr_tps->memarea, TPS_SIZE);
+                munmap(curr_tps->memarea->memptr, TPS_SIZE);
                 return 1;
         } else {
                 return 0;
@@ -124,6 +168,7 @@ int tps_destroy(void)
         if (temp == NULL) {
                 return -1;
         } else {
+                free(((struct tps *) temp)->memarea);
                 queue_delete(tps_q, temp);
                 return 0;
         }
@@ -154,9 +199,16 @@ int tps_read(size_t offset, size_t length, void *buffer)
         if (offset + length > TPS_SIZE) {
                 return -1;
         }
-        
-        memcpy(buffer, curr_tps->memarea + offset, length);
-        
+
+        if (mprotect(curr_tps->memarea->memptr, TPS_SIZE, PROT_READ) < 0) {
+                return -1;
+        }
+
+        memcpy(buffer, curr_tps->memarea->memptr + offset, length);
+
+        if (mprotect(curr_tps->memarea->memptr, TPS_SIZE, PROT_NONE) < 0) {
+                return -1;
+        }
         return 0;
 }
 
@@ -188,9 +240,32 @@ int tps_write(size_t offset, size_t length, void *buffer)
         if (offset + length > TPS_SIZE) {
                 return -1;
         }
+
+        if (curr_tps->memarea->num_refs > 1) {
+                struct mempage *newpage = malloc(sizeof(struct mempage));
+                newpage->num_refs = 1;
+                newpage->memptr = mmap(NULL, TPS_SIZE, PROT_WRITE,
+                        MAP_ANON|MAP_PRIVATE, -1, 0);
+
+                if (newpage == NULL) {
+                        free(newpage);
+                        return -1;
+                }
+                tps_read(0, TPS_SIZE, newpage->memptr);
+                curr_tps->memarea->num_refs--;
+                curr_tps->memarea = newpage;
+        } else {
+                if (mprotect(curr_tps->memarea->memptr, TPS_SIZE, PROT_WRITE) < 0) {
+                        return -1;
+                }
+        }
+
+        memcpy(curr_tps->memarea->memptr + offset, buffer, length);
         
-        memcpy(curr_tps->memarea + offset, buffer, length);
-        
+        if (mprotect(curr_tps->memarea->memptr, TPS_SIZE, PROT_NONE) < 0) {
+                return -1;
+        }
+
         return 0;
 }
 
@@ -217,7 +292,7 @@ int tps_clone(pthread_t tid)
                 return -1;
         }
 
-        new_tps->memarea = mmap(NULL, TPS_SIZE, PROT_READ | PROT_WRITE,
+        new_tps->memarea = mmap(NULL, TPS_SIZE, PROT_WRITE,
                 MAP_ANON|MAP_PRIVATE, -1, 0);
 
         if (new_tps->memarea == NULL) {
@@ -231,7 +306,9 @@ int tps_clone(pthread_t tid)
         if (cpy_tps == NULL) {
                 return -1;
         }
-        memcpy(new_tps->memarea, cpy_tps->memarea, TPS_SIZE);
+        
+        new_tps->memarea = cpy_tps->memarea;
+        new_tps->memarea->num_refs++;
 
         queue_enqueue(tps_q, (void *)new_tps);
         return 0;
