@@ -81,6 +81,18 @@ static void segv_handler(int sig, siginfo_t *si, __attribute__((unused)) void
 int tps_init(int segv)
 {
         enter_critical_section();
+        if (tps_q != NULL) {
+                exit_critical_section();
+                return -1;
+        }
+
+        tps_q = queue_create();
+        
+        if (tps_q == NULL) {
+                exit_critical_section();
+                return -1;
+        }
+
         if (segv) {
                 struct sigaction sa;
 
@@ -91,15 +103,7 @@ int tps_init(int segv)
                 sigaction(SIGSEGV, &sa, NULL);
         }
 
-	if (tps_q != NULL) {
-                return -1;
-        }
-
-        tps_q = queue_create();
-        
-        if (tps_q == NULL) {
-                return -1;
-        }
+	
         exit_critical_section();
         return 0;
 }
@@ -125,11 +129,13 @@ int tps_create(void)
 
         if (temp != NULL) {
                 free(new_tps);
+                exit_critical_section();
                 return -1;
         }
 
         new_tps->memarea = malloc(sizeof(struct mempage));
         if (new_tps->memarea == NULL) {
+                exit_critical_section();
                 return -1;
         }
 
@@ -139,6 +145,7 @@ int tps_create(void)
 
         if (new_tps->memarea == NULL) {
                 free(new_tps);
+                exit_critical_section();
                 return -1;
         }
 
