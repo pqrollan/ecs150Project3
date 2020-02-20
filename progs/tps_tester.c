@@ -104,7 +104,6 @@ void *thread1(__attribute__((unused)) void *arg)
 void *threadWrite(__attribute__((unused)) void *arg)
 {
 	char *buffer = malloc(TPS_SIZE);
-
         tps_create();
         tps_write(0, TPS_SIZE, msg1);
 
@@ -130,6 +129,23 @@ void *threadWrite(__attribute__((unused)) void *arg)
 	return NULL;
 }
 
+void *noTPS(__attribute__((unused)) void *arg)
+{
+        return NULL;
+}
+
+void *emptyTPS(__attribute__((unused)) void *arg)
+{
+        char *buffer = malloc(TPS_SIZE);
+        tps_create();
+        tps_write(0, TPS_SIZE, msg1);
+
+	/* Read the TPS and make sure it contains the original */
+	memset(buffer, 0, TPS_SIZE);
+	tps_read(0, TPS_SIZE, buffer);
+	assert(!memcmp(msg1, buffer, TPS_SIZE));       
+        return NULL;
+}
 
 int main(void)
 {
@@ -142,9 +158,28 @@ int main(void)
 
 	/* Init TPS API */
 	tps_init(1);
-        assert(tps_init(1)==-1);
+        tps_create();
 
-        /* Create thread 1 and wait */
+        /* begin fault testing the TPS */
+        assert(tps_init(1)==-1);
+        assert(tps_create()==-1);
+        assert(tps_destroy()==0);
+        assert(tps_destroy()==-1);
+
+        /* testing tps functions on empty tps */
+        char *buffer = malloc(TPS_SIZE);
+        assert(tps_write(0, TPS_SIZE, msg1)==-1);
+        assert(tps_read(0, TPS_SIZE, buffer)==-1);
+        
+        /*clone fault tests */
+        pthread_create(&tid, NULL, noTPS, NULL);
+        assert(tps_clone(tid)==-1);
+        tps_create();
+        pthread_create(&tid, NULL, emptyTPS, NULL);
+        assert(tps_clone(tid)==-1);
+        pthread_join(tid, NULL);
+
+        /* Create write thread and wait */
 	pthread_create(&tid, NULL, threadWrite, NULL);
 	pthread_join(tid, NULL);
 
@@ -158,8 +193,6 @@ int main(void)
 
 
         /*  segfault test  */
-        tps_create();
-
         char *tps_addr = latest_mmap_addr;
 
         tps_addr[0] = ' ';
