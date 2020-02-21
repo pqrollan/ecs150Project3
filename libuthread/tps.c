@@ -31,7 +31,7 @@ queue_t tps_q = NULL;
 
 int find_tps(void *data, void *arg)
 {
-        if (*((pthread_t *) arg) == ((struct tps *) data)->tid) {
+        if (pthread_equal(*((pthread_t *) arg), ((struct tps *) data)->tid)) {
                 return 1;
         } else {
                 return 0;
@@ -121,6 +121,10 @@ int tps_init(int segv)
 int tps_create(void)
 {
         enter_critical_section();
+        if (tps_q == NULL) {
+                return -1;
+        }
+
 	struct tps *new_tps = malloc(sizeof(struct tps));
         new_tps->tid = pthread_self();
         
@@ -140,25 +144,27 @@ int tps_create(void)
         }
 
         new_tps->memarea->num_refs = 1;
-        new_tps->memarea->memptr = mmap(NULL, TPS_SIZE, PROT_NONE,
+        new_tps->memarea->memptr = mmap(NULL, TPS_SIZE, PROT_WRITE,
                 MAP_ANON|MAP_PRIVATE, -1, 0);
+        memset(new_tps->memarea->memptr, 0, TPS_SIZE);
 
-        if (new_tps->memarea == NULL) {
-                free(new_tps);
+        if (mprotect(new_tps->memarea->memptr, TPS_SIZE, PROT_NONE) < 0) {
                 exit_critical_section();
                 return -1;
         }
 
+
         queue_enqueue(tps_q, (void *)new_tps);
         exit_critical_section();
-
         return 0;
 }
 
 int unmap_tps(void *data, void *arg)
 {
         struct tps *curr_tps = data;
-        if (*((pthread_t *) arg) == curr_tps->tid) {
+        if (pthread_equal(*((pthread_t *) arg), curr_tps->tid)) {
+                mprotect(curr_tps->memarea->memptr, TPS_SIZE, PROT_READ |
+                        PROT_WRITE);
                 munmap(curr_tps->memarea->memptr, TPS_SIZE);
                 return 1;
         } else {
@@ -185,8 +191,15 @@ int tps_destroy(void)
                 exit_critical_section();
                 return -1;
         } else {
-                free(((struct tps *) temp)->memarea);
+                struct tps *curr_tps = temp;
+                if (curr_tps->memarea->num_refs > 1) {
+                        curr_tps->memarea->num_refs--;
+                } else {
+                        free(((struct tps *) temp)->memarea);
+                }
+
                 queue_delete(tps_q, temp);
+                free(temp);
                 exit_critical_section();
                 return 0;
         }
@@ -286,8 +299,10 @@ int tps_write(size_t offset, size_t length, void *buffer)
                 tps_read(0, TPS_SIZE, newpage->memptr);
                 curr_tps->memarea->num_refs--;
                 curr_tps->memarea = newpage;
-        } else {
+        } 
+        else {
                 if (mprotect(curr_tps->memarea->memptr, TPS_SIZE, PROT_WRITE) < 0) {
+                        perror(NULL);
                         exit_critical_section();
                         return -1;
                 }

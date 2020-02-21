@@ -21,6 +21,7 @@ struct semaphore {
  */
 sem_t sem_create(size_t count)
 {
+        enter_critical_section();
 	sem_t new_sem = malloc(sizeof(struct semaphore));
 
         if (new_sem == NULL) {
@@ -29,7 +30,7 @@ sem_t sem_create(size_t count)
 
         new_sem->count = count;
         new_sem->q = queue_create();
-
+        exit_critical_section();
         return new_sem;
 }
 /*
@@ -43,11 +44,13 @@ sem_t sem_create(size_t count)
  */
 int sem_destroy(sem_t sem)
 {
+        enter_critical_section();
 	if (sem == NULL || queue_destroy(sem->q) == -1) {
                 return -1;
         }
 
         free(sem);
+        exit_critical_section();
         return 0;
 }
 /*
@@ -67,7 +70,8 @@ int sem_down(sem_t sem)
 
         if (sem == NULL) {
                 return -1;
-        } else if (sem->count < 1) {
+        }
+        while (sem->count < 1) {
                 pthread_t *curr_tid = malloc(sizeof(pthread_t));
                 *curr_tid = pthread_self();
                 queue_enqueue(sem->q, (void *)curr_tid);
@@ -107,6 +111,7 @@ int sem_up(sem_t sem)
                 pthread_t *tid_unblock;
                 queue_dequeue(sem->q, (void **)&tid_unblock);
                 thread_unblock(*tid_unblock);
+                free(tid_unblock);
                 //exit_critical_section();
         }
         exit_critical_section();
