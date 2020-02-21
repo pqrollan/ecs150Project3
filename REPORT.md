@@ -4,9 +4,7 @@
 ## Phase 1 - Semaphores
 Each semaphore is uses a count to measure its number of available resources
 and a queue pointer so that each semaphore can have it's own dynamically
-allocated queue to serve as a blocked queue when the count is 0. We also
-added a pthread_t next variable and check_next variable used to manage the
-edge cases as explained below. 
+allocated queue to serve as a blocked queue when the count is 0. 
 
 Sem_create() and sem_destroy() are used to allocate and deallocate memory
 respectively. These functions make use of the queue_create() and
@@ -29,16 +27,6 @@ seperately. We began by checking if the thread can run in a while loop.
 This way even if theread A has been unblocked, if by they time thread A
 gets to run it's resource has been taken it will once again block itself. 
 
-However this can lead to starvation. Thus we created a pthread_t next
-variable and check_next variable. The check_next acts as a boolian so that
-if a new thread, not matching the thread designated by our pthread_t next 
-variable, tries to snatch the last resouce (ie the semaphoes value = 1),
-this thread will be blocked. This chain will occur until the desired thread
-gets to run. However, if the blocked queue is empty we will set the check_next
-to 0. This will assure that any thread removed from the blocked queue will
-get priority to run when the resources are scarce. 
- 
-
 
 ## Phase 2 - Thread Protected Storage
 Each TPS uses a pthread_t tid to keep track of which Thread ID the TPS
@@ -58,11 +46,17 @@ that we can find each one later with queue_iterate.
 
 tps_create() creates a TPS for the current thread, assigning the TID and
 allocates space for the memarea. mmap() is then called to reserve a page of
-memory pointed to  the mempage. The new tps is then enqueue'd to the tps queue.
+memory pointed to  the mempage. We then use memset() to set the data block
+to all 0s. Finally we set the permissions to None to assure privacy for the
+thread. The new tps is then enqueue'd to the tps queue.
 
 tps_destroy() uses queue iterate to find the desired tps in the tps queue,
 unmap the resereved memory with the munmap() fuction, remove the tps from
-the queue and finally free all space associated with the tps. 
+the queue and finally free all space associated with the tps. This function
+also checks that there are no other threads cloning this tps before it is
+deleted. If there are other threads, it simply decrements the reference 
+counter.
+
 
 tps_read() uses the mprotect() function to change the protection flags of
 the current thread's mempage to allow readability. memcpy() is used to read
@@ -95,7 +89,7 @@ thread at a time will create it's own unique copy.
 Critical sections are used all throughout sem.c and tps.c. We use the
 enter_critical_section() function before allocation or freeing memory,
 modifying any global variables, etc. We then make sure to exit the critical
-section once all critical behavior is finished and right before exiting the
+section once all critical behavior is finished and/ or right before exiting the
 function in the case of any errors. 
 
 
@@ -111,4 +105,7 @@ were also able to read and write with an offset.
 
 We tested cloning, using semaphores to manage each thread's behavior. We
 began testing the cloning behavior, asserting that one or more clones would
-read the same data. 
+read the same data. These clones then showed copy-on-write functionality,
+creating 2 unique memareas when a write was completed. 
+Finally we added a segfault error to test that accessing a private memory
+space wouldd not be allowed and would properly throw a seg fault.
