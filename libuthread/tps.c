@@ -12,11 +12,18 @@
 #include "thread.h"
 #include "tps.h"
 
+/* mempage holds a void pointer to the private memory used by the thread.
+This allows multiple threads to point the the same dynamically allocated 
+space in the case of cloning. When this occurs, num_refs keeps track of the
+number of cloning threads/ */
 struct mempage {
 	void *memptr;
 	int num_refs;
 };
 
+/* Holds the TID of the the thread this TPS belogs too, allowing us to find
+the tps. Holds a memarea which contains the a reference to the allocated
+memory. */
 struct tps {
 	pthread_t tid;
 	struct mempage *memarea;
@@ -24,6 +31,8 @@ struct tps {
 
 queue_t tps_q = NULL;
 
+/* This function helps us find a specific tps in a tps queue by searching
+for it's TID */
 int find_tps(void *data, void *arg)
 {
 	if (pthread_equal(*((pthread_t *) arg), ((struct tps *) data)->tid)) {
@@ -33,6 +42,8 @@ int find_tps(void *data, void *arg)
 	}
 }
 
+/* This function helps us find a specific tps in a tps queue by searching
+for the allocated space */
 int find_by_memarea(void *data, void *arg)
 {
 	if (((void *) arg) == ((struct tps *) data)->memarea->memptr) {
@@ -42,6 +53,8 @@ int find_by_memarea(void *data, void *arg)
 	}
 }
 
+/* This signal handler will throw an error when private memory is accessed
+and will exit the program */
 static void segv_handler(int sig, siginfo_t *si, __attribute__((unused)) void
 	*context)
 {
@@ -61,6 +74,8 @@ static void segv_handler(int sig, siginfo_t *si, __attribute__((unused)) void
 	raise(sig);
 }
 
+/* Initializes the TPS functionality by creating a queue where the TPS's
+can be stored and initiallized the signal handler to maintain privacy */
 int tps_init(int segv)
 {
 	enter_critical_section();
@@ -90,6 +105,7 @@ int tps_init(int segv)
 	return 0;
 }
 
+/* Allocates space for the TPS amd assign it's TID to the current thread */
 int tps_create(void)
 {
 	enter_critical_section();
@@ -101,8 +117,8 @@ int tps_create(void)
 	new_tps->tid = pthread_self();
 
 	void *temp = NULL;
+	/* Makes sure there does not already exist a TPS for this thread */
 	queue_iterate(tps_q, &find_tps, &(new_tps->tid), &temp);
-
 	if (temp != NULL) {
 		free(new_tps);
 		exit_critical_section();
@@ -115,28 +131,32 @@ int tps_create(void)
 		return -1;
 	}
 
+	/* Creates a space in memory that the thread can later use to read and
+	write. This space is initially filled with all 0s */
 	new_tps->memarea->num_refs = 1;
 	new_tps->memarea->memptr = mmap(NULL, TPS_SIZE, PROT_WRITE,
 		MAP_ANON|MAP_PRIVATE, -1, 0);
 	memset(new_tps->memarea->memptr, 0, TPS_SIZE);
 
+	/* Protection is set to not allow reading or writing by default */
 	if (mprotect(new_tps->memarea->memptr, TPS_SIZE, PROT_NONE) < 0) {
 		exit_critical_section();
 		return -1;
 	}
 
-
+	/* Every TPS is enqueue'd to the tps queue to be found later */
 	queue_enqueue(tps_q, (void *)new_tps);
 	exit_critical_section();
 	return 0;
 }
 
+/* Used to free the memory allowcated for the TPS. Checks to make sure
+there are no other threads referencing it as their own */
 int unmap_tps(void *data, void *arg)
 {
 	struct tps *curr_tps = data;
-	if (pthread_equal(*((pthread_t *) arg), curr_tps->tid)) {
-		mprotect(curr_tps->memarea->memptr, TPS_SIZE, PROT_READ |
-			PROT_WRITE);
+	if (pthread_equal(*((pthread_t *) arg), curr_tps->tid) && 
+		curr_tps->memarea->num_refs <= 1) {
 		munmap(curr_tps->memarea->memptr, TPS_SIZE);
 		return 1;
 	} else {
@@ -144,6 +164,7 @@ int unmap_tps(void *data, void *arg)
 	}
 }
 
+/* Frees all memory associated with the TPS, calls unmap_tps to assist */
 int tps_destroy(void)
 {
 	pthread_t curr_tid = pthread_self();
@@ -175,17 +196,20 @@ int tps_read(size_t offset, size_t length, void *buffer)
 
 	enter_critical_section();
 	struct tps *curr_tps = NULL;
+	/* Iterate to find the right tps to read from */
 	queue_iterate(tps_q, &find_tps, &curr_tid, (void **) &curr_tps);
 
 	if (curr_tps == NULL || buffer == NULL) {
 		exit_critical_section();
 		return -1;
 	}
+	/* testing to make sure there isn't an overflow */
 	if (offset + length > TPS_SIZE) {
 		exit_critical_section();
 		return -1;
 	}
 
+	/* Changes the permission to allow a read */
 	if (mprotect(curr_tps->memarea->memptr, TPS_SIZE, PROT_READ) < 0) {
 		exit_critical_section();
 		return -1;
@@ -193,6 +217,7 @@ int tps_read(size_t offset, size_t length, void *buffer)
 
 	memcpy(buffer, curr_tps->memarea->memptr + offset, length);
 
+	/* Returns permission back to none before exiting */
 	if (mprotect(curr_tps->memarea->memptr, TPS_SIZE, PROT_NONE) < 0) {
 		exit_critical_section();
 		return -1;
@@ -209,17 +234,21 @@ int tps_write(size_t offset, size_t length, void *buffer)
 	enter_critical_section();
 
 	struct tps *curr_tps = NULL;
+	/* Iterate to find the right tps to write too */
 	queue_iterate(tps_q, &find_tps, &curr_tid, (void **) &curr_tps);
 
 	if (curr_tps == NULL || buffer == NULL) {
 		exit_critical_section();
 		return -1;
 	}
+	/* checking for overflow */
 	if (offset + length > TPS_SIZE) {
 		exit_critical_section();
 		return -1;
 	}
 
+	/* Checks for copies, choosing to write to a new unique mempage if there
+	are more than 1 references to a mempage */ 
 	if (curr_tps->memarea->num_refs > 1) {
 		struct mempage *newpage = malloc(sizeof(struct mempage));
 		newpage->num_refs = 1;
@@ -236,6 +265,7 @@ int tps_write(size_t offset, size_t length, void *buffer)
 		curr_tps->memarea = newpage;
 	}
 	else {
+		/* Sets write permissions on TPS */
 		if (mprotect(curr_tps->memarea->memptr, TPS_SIZE, PROT_WRITE) < 0) {
 			perror(NULL);
 			exit_critical_section();
@@ -245,6 +275,8 @@ int tps_write(size_t offset, size_t length, void *buffer)
 
 	memcpy(curr_tps->memarea->memptr + offset, buffer, length);
 
+	/* returns the page's privacy settings to none for either an old or a new
+	page */
 	if (mprotect(curr_tps->memarea->memptr, TPS_SIZE, PROT_NONE) < 0) {
 		exit_critical_section();
 		return -1;
@@ -254,6 +286,8 @@ int tps_write(size_t offset, size_t length, void *buffer)
 	return 0;
 }
 
+/* creates a new TPS  with a unique TID but sets the memarea to point to
+the existing memarea of another thread's TPS */
 int tps_clone(pthread_t tid)
 {
 	enter_critical_section();
@@ -276,6 +310,8 @@ int tps_clone(pthread_t tid)
 		return -1;
 	}
 
+	/* Increments the number of references so that the tps_write() function
+	can correctly differentiate between copied pages and unique ones */
 	new_tps->memarea = cpy_tps->memarea;
 	new_tps->memarea->num_refs++;
 
