@@ -3,8 +3,13 @@ objs := sem.o tps.o
 preobjs := thread.o queue.o
 
 CC := gcc
-CFLAGS := -Wall -Werror -Wextra
+CFLAGS := -Wall -Werror -Wextra -pipe -pthread
+ifneq ($(D),1)
+CFLAGS += -O2
+else
 CFLAGS += -g
+endif
+
 ARCHIVE := ar rcs
 
 ifneq ($(V),1)
